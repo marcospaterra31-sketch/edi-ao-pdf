@@ -70,11 +70,12 @@ main{flex:1;overflow:auto;padding:18px 10px 40px}
 </main>
 <script src="lib/pdf.min.js"></script>
 <script src="lib/pdf-lib.min.js"></script>
+<script src="lib/fontkit.umd.min.js"></script>
 <script>
 const $=s=>document.querySelector(s);
 const pdfjs=window.pdfjsLib;
 pdfjs.GlobalWorkerOptions.workerSrc='lib/pdf.worker.min.js';
-const S={bytes:null,pdf:null,scale:1.4,mode:'view',tool:'edit',edits:[],name:'documento.pdf',ents:[],uid:0};
+const S={bytes:null,pdf:null,scale:1.4,mode:'view',tool:'edit',edits:[],name:'documento.pdf',ents:[],uid:0,fd:{}};
 const FAM={H:'Helvetica,Arial,sans-serif',T:'"Times New Roman",Times,serif',C:'"Courier New",Courier,monospace'};
 const showMsg=t=>{const m=$('#msg');m.textContent=t||'';m.style.display=t?'block':'none'};
 const pdfName=k=>{const f=k[0],b=k[1]==='1',i=k[2]==='1';
@@ -83,9 +84,9 @@ const pdfName=k=>{const f=k[0],b=k[1]==='1',i=k[2]==='1';
 const label=k=>({H:'Helvetica',T:'Times',C:'Courier'})[k[0]]+(k[1]==='1'?' negrito':'')+(k[2]==='1'?' itálico':'');
 
 function fontKey(page,item,styles){
-  let nm='';try{if(page.commonObjs.has(item.fontName))nm=page.commonObjs.get(item.fontName).name||''}catch(e){}
+  let nm='',fo={};try{if(page.commonObjs.has(item.fontName)){fo=page.commonObjs.get(item.fontName);nm=fo.name||''}}catch(e){}
   const fam=(styles[item.fontName]||{}).fontFamily||'';
-  const b=/bold|black|heavy|semibold/i.test(nm)?1:0,i=/italic|oblique/i.test(nm)?1:0;
+  const b=(fo.bold||/bold|black|heavy|semibold|demi/i.test(nm))?1:0,i=(fo.italic||/italic|oblique/i.test(nm))?1:0;
   let f='H';
   if(/courier|mono|consol/i.test(nm)||fam==='monospace')f='C';
   else if((/times|serif|georgia|garamond|minion|roman/i.test(nm)&&!/sans/i.test(nm))||fam==='serif')f='T';
@@ -111,8 +112,8 @@ async function openFile(file){
     const buf=new Uint8Array(await file.arrayBuffer());
     const head=new TextDecoder('latin1').decode(buf.slice(0,1024));
     if(!head.includes('%PDF'))throw{name:'NotPdf'};
-    S.bytes=buf;S.name=file.name;S.edits=[];
-    const task=pdfjs.getDocument({data:buf.slice()});
+    S.bytes=buf;S.name=file.name;S.edits=[];S.fd={};
+    const task=pdfjs.getDocument({data:buf.slice(),fontExtraProperties:true});
     task.onPassword=(cb,reason)=>{
       const p=prompt(reason===2?'Senha incorreta. Digite novamente:':'Este PDF tem senha. Digite a senha para abrir:');
       if(p===null){task.destroy();showMsg('PDF protegido por senha. Informe a senha para abrir.')}else cb(p)};
@@ -150,9 +151,10 @@ async function renderPage(ent){
   await page.render({canvasContext:cv.getContext('2d',{willReadFrequently:true}),viewport:vp,transform:dpr!==1?[dpr,0,0,dpr,0,0]:null}).promise;
   el.classList.remove('ph');el.prepend(cv);ent.cv=cv;ent.dpr=dpr;
   const tc=await page.getTextContent();
+  for(const it of tc.items){if(S.fd[it.fontName])continue;let d=null,nm='';try{const fo=page.commonObjs.get(it.fontName);nm=fo.name||'';d=fo.data||null}catch(e){}S.fd[it.fontName]={d,nm}}
   ent.items=tc.items.filter(it=>it.str&&it.str.trim()).map((it,idx)=>{
     const sz=Math.hypot(it.transform[2],it.transform[3])||it.height||10;
-    return{idx,str:it.str,x:it.transform[4],y:it.transform[5],w:it.width,size:sz,key:fontKey(page,it,tc.styles)};
+    return{idx,str:it.str,x:it.transform[4],y:it.transform[5],w:it.width,size:sz,key:fontKey(page,it,tc.styles),fname:it.fontName,fam:(S.fd[it.fontName]&&S.fd[it.fontName].d)?(tc.styles[it.fontName]||{}).fontFamily:''};
   });
   drawLayer(ent);
 }
@@ -165,7 +167,7 @@ function drawLayer(ent){
     const[vx,vy]=pos(ent,e.x,e.y),fs=e.size*sc,d=document.createElement('div');d.className='ov';
     const w=Math.max(e.w||0,e.str.length*e.size*.5)*sc+2;
     Object.assign(d.style,{left:(vx-1)+'px',top:(vy-fs*1.0)+'px',height:fs*1.25+'px',width:w+'px',fontSize:fs+'px',
-      fontFamily:FAM[e.key[0]],fontWeight:e.key[1]==='1'?700:400,fontStyle:e.key[2]==='1'?'italic':'normal',
+      fontFamily:(e.fam?e.fam+',':'')+FAM[e.key[0]],fontWeight:(!e.fam&&e.key[1]==='1')?700:400,fontStyle:(!e.fam&&e.key[2]==='1')?'italic':'normal',
       color:`rgb(${e.fg})`,background:e.bg?`rgb(${e.bg})`:'transparent'});
     d.textContent=e.str;d.onclick=ev=>{ev.stopPropagation();if(S.tool==='edit')openEditor(ent,e)};
     ent.el.appendChild(d);
@@ -174,7 +176,7 @@ function drawLayer(ent){
     if(S.edits.some(e=>e.page===ent.n&&e.src===it.idx))continue;
     const[vx,vy]=pos(ent,it.x,it.y),fs=it.size*sc,d=document.createElement('div');d.className='hit';
     Object.assign(d.style,{left:vx+'px',top:(vy-fs)+'px',width:it.w*sc+'px',height:fs*1.25+'px'});
-    d.onclick=ev=>{ev.stopPropagation();if(S.tool==='edit')openEditor(ent,{src:it.idx,page:ent.n,x:it.x,y:it.y,w:it.w,size:it.size,key:it.key,str:it.str,orig:it.str})};
+    d.onclick=ev=>{ev.stopPropagation();if(S.tool==='edit')openEditor(ent,{src:it.idx,page:ent.n,x:it.x,y:it.y,w:it.w,size:it.size,key:it.key,fname:it.fname,fam:it.fam,str:it.str,orig:it.str})};
     ent.el.appendChild(d);
   }
 }
@@ -186,9 +188,9 @@ function openEditor(ent,rec){
   if(!rec.fg){const s=sample(ent.cv,ent.dpr,vx,vy-fs,rec.w*sc,fs*1.25);rec.bg=s.bg;rec.fg=s.fg}
   const inp=document.createElement('input');inp.className='ed';inp.value=rec.str;
   Object.assign(inp.style,{left:(vx-2)+'px',top:(vy-fs*1.05)+'px',height:fs*1.25+'px',width:Math.max(rec.w*sc+40,120)+'px',
-    fontSize:fs+'px',fontFamily:FAM[rec.key[0]],fontWeight:rec.key[1]==='1'?700:400,fontStyle:rec.key[2]==='1'?'italic':'normal'});
+    fontSize:fs+'px',fontFamily:(rec.fam?rec.fam+',':'')+FAM[rec.key[0]],fontWeight:(!rec.fam&&rec.key[1]==='1')?700:400,fontStyle:(!rec.fam&&rec.key[2]==='1')?'italic':'normal'});
   ent.el.appendChild(inp);inp.focus();inp.select();
-  $('#info').textContent='Fonte mantida: '+label(rec.key)+', '+rec.size.toFixed(1).replace('.',',')+' pt';
+  $('#info').textContent='Fonte do original: '+((S.fd[rec.fname]&&S.fd[rec.fname].nm)||label(rec.key))+', '+rec.size.toFixed(1).replace('.',',')+' pt';
   let done=false;
   const end=ok=>{if(done)return;done=true;
     if(ok){const v=inp.value,old=S.edits.find(e=>e.id===rec.id);
@@ -214,16 +216,16 @@ async function save(){
   showMsg('');
   try{
     const{PDFDocument,StandardFonts,rgb}=PDFLib;
-    const doc=await PDFDocument.load(S.bytes);const fonts={};
+    const doc=await PDFDocument.load(S.bytes);const fonts={},warn=[];if(window.fontkit)doc.registerFontkit(window.fontkit);
     for(const e of S.edits){
-      const pg=doc.getPage(e.page-1),nm=pdfName(e.key);
-      const f=fonts[nm]||(fonts[nm]=await doc.embedFont(StandardFonts[nm]));
-      const s=clean(e.str),c=a=>rgb(a[0]/255,a[1]/255,a[2]/255);
+      const pg=doc.getPage(e.page-1);let f=null,s=e.str;const fd=e.fname&&S.fd[e.fname]&&S.fd[e.fname].d;if(fd&&window.fontkit){try{const k=fonts['E'+e.fname]||(fonts['E'+e.fname]={kit:fontkit.create(fd),emb:null});if([...s].every(ch=>k.kit.hasGlyphForCodePoint(ch.codePointAt(0)))){k.emb=k.emb||await doc.embedFont(fd,{subset:false});f=k.emb}else warn.push(s)}catch(err){warn.push(s)}}
+      if(!f){const nm=pdfName(e.key);f=fonts[nm]||(fonts[nm]=await doc.embedFont(StandardFonts[nm]));s=clean(s)}
+      const c=a=>rgb(a[0]/255,a[1]/255,a[2]/255);
       if(e.bg){const w=Math.max(e.w,s?f.widthOfTextAtSize(s,e.size):0)+1;
         pg.drawRectangle({x:e.x-.5,y:e.y-e.size*.25,width:w,height:e.size*1.25,color:c(e.bg),borderWidth:0})}
       if(s)pg.drawText(s,{x:e.x,y:e.y,size:e.size,font:f,color:c(e.fg)});
     }
-    const out=await doc.save();
+    const out=await doc.save();if(warn.length)showMsg('Aviso: '+warn.length+' edição(ões) usam letras que não existem na fonte embutida do PDF; nelas foi usada a fonte padrão mais próxima: '+warn.slice(0,3).map(w=>'"'+w+'"').join(', '));
     const dl=typeof claude!=='undefined'?await claude.use('downloads'):null;
     const fn=S.name.replace(/\.pdf$/i,'')+'_editado.pdf';
     if(dl){await dl.save({filename:fn,data:out})}
